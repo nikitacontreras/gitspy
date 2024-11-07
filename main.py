@@ -33,7 +33,7 @@ class Repository:
 
 def main():
     for url in [
-        "https://aulavirtual.utp.edu.co/",
+        "https://example.com/.git/",
     ]:
         repo = Repository(url)
         repo.init()
