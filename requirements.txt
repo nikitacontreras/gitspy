@@ -1,0 +1,4 @@
+git_index_parser==1.0.0
+Requests==2.32.3
+tqdm==4.66.5
+urllib3==2.2.3
