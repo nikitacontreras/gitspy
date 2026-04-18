@@ -1,9 +1,37 @@
-# GitSpy
-```
+<div align="center">
+<svg width="600" height="150" viewBox="0 0 600 150" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <foreignObject width="100%" height="100%">
+        <div xmlns="http://www.w3.org/1999/xhtml">
+            <style>
+                .container {
+                    background: #0d1117;
+                    padding: 30px;
+                    border-radius: 12px;
+                    border: 1px solid #30363d;
+                    text-align: center;
+                }
+                .logo-text {
+                    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+                    white-space: pre;
+                    font-size: 14px;
+                    color: #58a6ff;
+                    display: inline-block;
+                    text-align: left;
+                }
+            </style>
+            <div class="container">
+                <div class="logo-text">
  ____  __ _____   __ _____ _  _
 (( ___ ||  ||    ((  ||_// \\//
  \\_|| ||  ||   \_)) ||     // 
-```
+                </div>
+            </div>
+        </div>
+    </foreignObject>
+</svg>
+</div>
+
+---
 **The Ultimate Multi-Protocol Reconnaissance & Extraction Engine**
 
 GitSpy is a high-performance security tool designed to detect and extract sensitive data from exposed repository folders and configuration files. It supports Git, SVN, Mercurial, and various configuration exposures with a focus on speed, binary integrity, and recursive discovery.
