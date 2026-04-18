@@ -1,12 +1,8 @@
-<table>
-  <tr>
-    <td width="100%" valign="top">
-      <img src="assets/logo.svg" width="300" />
-      <h3>GitSpy Recon Engine</h3>
-      <p><b>Advanced multi-protocol repository extraction tool.</b><br/>Built for speed, stealth, and recursive recovery of exposed Git, SVN, and Mercurial repositories.</p>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="assets/logo.svg" width="600" />
+</p>
+
+---
 
 ---
 **The Ultimate Multi-Protocol Reconnaissance & Extraction Engine**
