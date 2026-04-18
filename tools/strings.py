@@ -3,18 +3,29 @@ from typing import Optional
 
 
 def git_url(url: str) -> dict[str, str]:
-    splitted = url.split("/")
+    # Clean trailing slash and .git for splitting logic
+    clean_url = url.rstrip("/")
+    if clean_url.endswith(".git"):
+        clean_url = clean_url[:-4]
+    
+    splitted = clean_url.split("/")
+    
     if "@" in url:
         return {
             "host": url.split("@")[1].split(":")[0],
-            "user": splitted[-2].split(":")[1],
-            "name": splitted[-1].split(".")[0],
+            "user": splitted[-2].split(":")[1] if ":" in splitted[-2] else splitted[-2],
+            "name": splitted[-1],
             "url": url,
         }
+    
+    # Heuristic for non-ssh URLs
+    user = splitted[-2] if len(splitted) > 2 else base_domain(url)
+    name = splitted[-1] if len(splitted) > 1 else "root"
+    
     return {
         "host": domain(url),
-        "user": splitted[-2],
-        "name": splitted[-1].split(".")[0],
+        "user": user,
+        "name": name,
         "url": url,
     }
 
@@ -48,5 +59,16 @@ def protocol(url: str):
 
 def fixed_url(url: str):
     parsed_url = urlparse(url)
-    domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
-    return domain
+    url_path = parsed_url.path
+    
+    # Remove /.git or /.git/ from the end of the path
+    if url_path.endswith("/.git"):
+        url_path = url_path[:-5]
+    elif url_path.endswith("/.git/"):
+        url_path = url_path[:-6]
+    
+    # Ensure we don't end with a slash since /.git/ is added later
+    if url_path.endswith("/"):
+        url_path = url_path[:-1]
+        
+    return f"{parsed_url.scheme}://{parsed_url.netloc}{url_path}"

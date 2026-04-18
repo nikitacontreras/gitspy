@@ -2,8 +2,9 @@ import subprocess
 
 
 class cmd:
-    def __init__(self, cmd):
+    def __init__(self, cmd, cwd=None):
         self.cmd = cmd.split(" ")
+        self.cwd = cwd
         self.out = None
         self.err = None
         self.ret = None
@@ -17,6 +18,7 @@ class cmd:
             text=True,
             encoding="utf-8",
             errors="ignore",
+            cwd=self.cwd
         )
         self.out, self.err = process.stdout.strip(), process.stderr.strip()
         self.ret = process.returncode

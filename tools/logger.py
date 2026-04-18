@@ -1,6 +1,15 @@
 from datetime import datetime
 import os
+import threading
 
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = None
+
+_lock = threading.Lock()
+
+LEVEL = 0
 DEBUG = os.getenv("debug", "false").lower() == "true"
 
 
@@ -70,11 +79,22 @@ class color:
 
 
 class date:
-    def print(message) -> None:
-        print(f'[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] {message}')
+    @staticmethod
+    def print(message_text) -> None:
+        formatted = f'[{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}] {message_text}'
+        with _lock:
+            if tqdm:
+                tqdm.write(formatted)
+            else:
+                print(formatted)
 
 
 class message:
+    @staticmethod
+    def set_level(level: int):
+        global LEVEL
+        LEVEL = level
+
     def __checker(variable):
         type_mapping = {list: "<list>", dict: "<dict>", tuple: "<tuple>"}
         return f"{type_mapping.get(type(variable), '')} {variable}"
@@ -83,28 +103,27 @@ class message:
         return " ".join(map(lambda arg: message.__checker(arg), vars))
 
     def log(*args) -> None:
-        date.print(f"[LOG]{message.__stringMaker(args)}")
+        if LEVEL >= 2:
+            date.print(f"[LOG] {message.__stringMaker(args)}")
 
     def error(*args) -> None:
-        date.print(f"[{color.red('ERROR')}]{message.__stringMaker(args)}")
+        date.print(f"[{color.red('ERROR')}] {message.__stringMaker(args)}")
 
     def warn(*args) -> None:
-        date.print(f"[{color.yellow('WARN')}]{message.__stringMaker(args)}")
+        date.print(f"[{color.yellow('WARN')}] {message.__stringMaker(args)}")
 
     def info(*args) -> None:
-        date.print(f"[{color.cyan('INFO')}]{message.__stringMaker(args)}")
+        if LEVEL >= 1:
+            date.print(f"[{color.cyan('INFO')}] {message.__stringMaker(args)}")
 
     def debug(*args) -> None:
-        (
-            date.print(f"[{color.purple('DEBUG')}]{message.__stringMaker(args)}")
-            if DEBUG
-            else None
-        )
+        if LEVEL >= 3 or DEBUG:
+            date.print(f"[{color.purple('DEBUG')}] {message.__stringMaker(args)}")
 
     def success(*args) -> None:
-        date.print(f"[{color.lightgreen('SUCCESS')}]{message.__stringMaker(args)}")
+        date.print(f"[{color.lightgreen('SUCCESS')}] {message.__stringMaker(args)}")
 
     def custom(prefix: str, *args) -> None:
         date.print(
-            f"[{color.lightcyan(prefix.capitalize())}]{message.__stringMaker(args)}"
+            f"[{color.lightcyan(prefix.capitalize())}] {message.__stringMaker(args)}"
         )

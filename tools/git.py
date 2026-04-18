@@ -1,313 +1,381 @@
-from tools.files import Internet as webFiles
+import concurrent.futures
+import configparser
+import os
+import zlib
+import struct
+from os import path, makedirs, getcwd
+from threading import Lock
+from tqdm import tqdm
+from tools.files import Internet as webFiles, Internet
 from tools.logger import message
-from tools.strings import *
-from tools.cli import cmd
-
-
-from subprocess import CalledProcessError
-
-from io import BytesIO
-from os import path, curdir, makedirs, getcwd, chdir, remove
-from git_index_parser import GitIndexParser, GitIndexFile
-
-import configparser, traceback, re
-
+from tools.strings import git_url, url_git
 
 class Git:
-    def isObject(objname: str):
-        return bool(re.search(r"/[a-f0-9]{2}/[a-f0-9]{38}", objname))
+    @staticmethod
+    def isObject(objname: str) -> bool:
+        return "/" in objname and len(objname.split("/")[-1]) >= 38
 
-    def process(gitpath: str, filename: str) -> list[str]:
-        """
-        Process a git object file and extract any hash references from its content.
+    @staticmethod
+    def process(working_dir: str, objname: str) -> list:
+        # Placeholder for complex object processing if needed
+        return []
 
-        Args:
-            gitpath: Path to the git repository
-            filename: Name of the object file to process
-
-        Returns:
-            List of object paths extracted from the content
-        """
-        original_dir = getcwd()
-        hash_value = filename.split("/", 1)[-1].replace("/", "")
-        result = []
-
+    @staticmethod
+    def parseObjectsAndPacks(filepath: str) -> list:
+        found = []
+        if not path.exists(filepath):
+            return found
+            
         try:
-            chdir(gitpath)
+            with open(filepath, "rb") as f:
+                data = f.read()
+            
+            if not data: return found
 
-            type_result = cmd(
-                f"git cat-file -t {hash_value}",
-            )
-            if type_result.ret != 0:
-                raise CalledProcessError(
-                    type_result.ret, type_result.cmd, type_result.err
-                )
-            obj_type = type_result.out.strip()
+            # --- CASE 1: Git Index (DIRC) ---
+            if data.startswith(b"DIRC"):
+                # Header: DIRC (4) + Version (4) + Entries (4)
+                if len(data) < 12: return found
+                num_entries = struct.unpack(">I", data[8:12])[0]
+                
+                # Offset starts after header (12 bytes)
+                pos = 12
+                for _ in range(num_entries):
+                    # SHA1 is at offset 40 from entry start
+                    sha1_pos = pos + 40
+                    if sha1_pos + 20 > len(data): break
+                    
+                    sha1 = data[sha1_pos:sha1_pos+20].hex()
+                    found.append(f"objects/{sha1[:2]}/{sha1[2:]}")
+                    
+                    # Read flags for name length (2 bytes at offset 60)
+                    flags = struct.unpack(">H", data[sha1_pos+20:sha1_pos+22])[0]
+                    name_len = flags & 0x0FFF
+                    
+                    # Entry length is 62 (header) + name_len + (1-8 bytes padding)
+                    # The padding makes (62 + name_len + padding) % 8 == 0
+                    entry_len = 62 + name_len
+                    padding = 8 - (entry_len % 8)
+                    pos += entry_len + padding
+                return found
 
-            if obj_type == "blob":
-                content_result = cmd(f"git cat-file -p {hash_value}")
-                if content_result.ret != 0:
-                    raise CalledProcessError(
-                        content_result.ret, content_result.cmd, content_result.err
-                    )
-
-                hashes = set(
-                    re.findall(
-                        r"(?<![:alnum:])[a-f0-9]{40}(?![:alnum:])",
-                        content_result.out,
-                    )
-                )
-                result = [f"objects/{h[:2]}/{h[2:]}" for h in hashes]
-
-        except CalledProcessError as e:
-            message.error(f"Git command failed for {filename}: {e.stderr}")
-            object_path = path.join(gitpath, filename)
-            if path.exists(object_path):
-                remove(object_path)
-        except Exception as e:
-            print(traceback.format_exc())
-            message.error(f"Error processing {filename}: {str(e)}")
-        finally:
-            chdir(original_dir)
-
-        return result
-
-    # def parseObjectsAndPacks(target: str) -> None:
-    #     message.info(f"Parsing {target} for objects and packs")
-    #     try:
-    #         with open(target, "rb") as f:
-    #             data = f.read()
-    #             for match in re.finditer(rb"\x00\x00\x00\x02", data):
-    #                 pack = data[match.start() - 4 : match.start()]
-    #                 message.info(f"Pack: {pack}")
-    #     except Exception as e:
-    #         message.error(f"Failed to parse {target}: {e}")
-
-    def parseObjectsAndPacks(target: str) -> list[str]:
-        queue = []
-        message.info(f"Parsing {target} for objects and packs")
-        try:
-            with open(target, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
-        except UnicodeDecodeError:
-            with open(target, "rb") as f:
-                content = f.read().decode("utf-8", errors="ignore")
-
-        hashes = re.findall(r"[a-f0-9]{40}", content)
-        packs = re.findall(r"pack\-[a-f0-9]{40}", content)
-
-        for h in hashes:
-            queue.append(f"objects/{h[:2]}/{h[2:]}")
-        for pack in packs:
-            queue.append(f"objects/pack/{pack}.pack")
-            queue.append(f"objects/pack/{pack}.idx")
-
-        if not hashes and not packs:
-            message.info(f"No hashes or packs found in {target}")
-        else:
-            message.info(
-                f"Found {len(hashes)} hashes and {len(packs)} packs in {target}"
-            )
-
-        return queue
-
-
-class Repository:
-    def __init__(self):
-        self.name = None
-        self.url = None
-        self.host = None
-        self.user = None
-
-    @property
-    def name(self) -> str:
-        return self.__name
-
-    @name.setter
-    def name(self, value: str):
-        self.__name = value
-
-    @property
-    def url(self) -> str:
-        return self.__url
-
-    @url.setter
-    def url(self, value: str):
-        self.__url = value
-
-    @property
-    def host(self) -> str:
-        return self.__host
-
-    @host.setter
-    def host(self, value: str):
-        self.__host = value
-
-    @property
-    def user(self) -> str:
-        return self.__user
-
-    @user.setter
-    def user(self, value: str):
-        self.__user = value
-
+            # --- CASE 2: Zlib compressed object (loose object) ---
+            if data[0] == 0x78:
+                decompressed = zlib.decompress(data)
+                if b"\x00" in decompressed:
+                    header, body = decompressed.split(b"\x00", 1)
+                    if header.startswith(b"tree"):
+                        pos = 0
+                        while pos < len(body):
+                            space_pos = body.find(b" ", pos)
+                            if space_pos == -1: break
+                            null_pos = body.find(b"\x00", space_pos)
+                            if null_pos == -1: break
+                            sha1 = body[null_pos+1:null_pos+21]
+                            if len(sha1) < 20: break
+                            sha1_hex = sha1.hex()
+                            found.append(f"objects/{sha1_hex[:2]}/{sha1_hex[2:]}")
+                            pos = null_pos + 21
+        except Exception:
+            pass
+        return found
 
 class Web:
     def __init__(self):
-        self.__domain: bool = None
-        self.__isDir: bool = False
-        self.__valid: bool = False
-        self.repository: Repository = Repository
-
-        self.QUEUE: list[str] = [
-            "HEAD",
-            "index",
-            "objects/info/packs",
-            "description",
-            "config",
-            "COMMIT_EDITMSG",
-            "packed-refs",
-            "refs/heads/master",
-            "refs/remotes/origin/HEAD",
-            "refs/stash",
-            "logs/HEAD",
-            "logs/refs/heads/master",
-            "logs/refs/remotes/origin/HEAD",
-            "info/refs",
-            "info/exclude",
-            "refs/wip/index/refs/heads/master",
-            "refs/wip/wtree/refs/heads/master",
-        ]
+        self.url = ""
+        self.__domain = ""
+        self.repository = type('obj', (object,), {'host': '', 'name': '', 'user': ''})
+        self.QUEUE = []
+        self.REPO_TYPE = "git" # Default, changed in probe()
         self.files = Exploit(self)
 
-    # def __parseLocalRepoInfo(self, )
+    def setDomain(self, url: str):
+        from tools.strings import fixed_url
+        clean_url = fixed_url(url)
+        self.url = clean_url.rstrip("/") + "/"
+        self.__domain = self.url
+        self.repository.host = clean_url.split("//")[-1].split("/")[0]
+        self.files = Exploit(self)
+
+    def set_timeout(self, timeout: int):
+        if timeout:
+            webFiles.timeout = int(timeout)
+
+    def set_concurrency(self, concurrency: int):
+        if concurrency:
+            self.files.set_workers(int(concurrency))
 
     def _getDomain(self) -> str:
         return self.__domain
 
-    def __exists(self, path: str) -> bool:
-        return webFiles.status_code(f"{self.__domain}/{path}") != 404
+    def init(self, mode: str, speed: str):
+        # 1. Prepare directory and initial queue
+        self.files.start_download() # This defines working dir
+        
+        if self.REPO_TYPE == "git":
+            # Step 1: Base files
+            self.download_base_files()
+            
+            # Step 2: Main branch from HEAD
+            head_data = Internet.get(f"{self.url}.git/HEAD")
+            if head_data and b"ref: " in head_data:
+                ref_path = head_data.decode('utf-8').strip().split("ref: ")[1]
+                self.download_ref(ref_path)
 
-    def __dirlist(self) -> bool:
-        self.__isDir = webFiles.status_code(f"{self.__domain}/.git") == 200
-        return self.__isDir
+            # Step 3: Extract from common refs
+            self.extract_from_refs()
+            
+            # Step 4: Final extraction
+            self.files.start_download()
 
-    def __hasConfig(self) -> bool:
-        return self.__exists(".git/config")
+    def download_base_files(self):
+        files = ["HEAD", "config", "description", "index", "packed-refs", "info/exclude", "objects/"]
+        for f in files:
+            self.files.download_and_process(f)
 
-    def hasGitFolder(self) -> bool:
-        message.info(f"Checking if {self.__domain} has a .git folder")
-        self.__valid = self.__dirlist() or self.__hasConfig()
-        return self.__valid
+    def extract_from_refs(self):
+        common_refs = [
+            "refs/heads/master", "refs/heads/main", "refs/heads/dev", "refs/heads/staging",
+            "refs/remotes/origin/master", "refs/remotes/origin/main", "refs/stash"
+        ]
+        for ref in common_refs:
+            self.download_ref(ref)
 
-    def isExplorable(self) -> bool:
-        return self.__isDir
+    def download_ref(self, ref_path: str):
+        data = Internet.get(f"{self.url}.git/{ref_path}")
+        if data and len(data.strip()) == 40:
+            obj_sha = data.decode('utf-8').strip()
+            obj_path = f"objects/{obj_sha[:2]}/{obj_sha[2:]}"
+            with self.files._Exploit__lock:
+                if obj_path not in self.files._Exploit__downloaded:
+                    self.files._Exploit__crawler.QUEUE.append(obj_path)
 
-    def setDomain(self, url: str):
-        self.__domain = fixed_url(url) if fixed_url(url) else None
+    def probe(self) -> bool:
+        # Reset queue for each probe
+        self.QUEUE = []
+        
+        # 1. Check for .git
+        data = webFiles.get(f"{self.__domain}.git/HEAD")
+        if Internet.is_valid_git_content(data, "HEAD"):
+            self.REPO_TYPE = "git"
+            self.QUEUE.extend(["HEAD", "config", "index", "description"])
+            return True
+            
+        # 2. Check for .env
+        data = webFiles.get(f"{self.__domain}.env")
+        if data and not Internet.is_valid_git_content(data, "<html>"): # Reuse HTML check
+            self.REPO_TYPE = "env"
+            self.QUEUE.extend([".env", ".env.local", ".env.dev", ".env.prod", ".env.example"])
+            return True
+            
+        # 3. Check for SVN
+        data = webFiles.get(f"{self.__domain}.svn/wc.db")
+        if Internet.is_valid_git_content(data, "wc.db"):
+            self.REPO_TYPE = "svn"
+            self.QUEUE.extend([".svn/wc.db", ".svn/entries", ".svn/format"])
+            return True
 
+        # 4. Check for Hg
+        data = webFiles.get(f"{self.__domain}.hg/00manifest.i")
+        if Internet.is_valid_git_content(data, "00manifest.i"):
+            self.REPO_TYPE = "hg"
+            self.QUEUE.extend([".hg/00manifest.i", ".hg/requires", ".hg/hgrc"])
+            return True
+            
+        # 5. Check for .DS_Store
+        data = webFiles.get(f"{self.__domain}.DS_Store")
+        if Internet.is_valid_git_content(data, ".DS_Store"):
+            self.REPO_TYPE = "ds_store"
+            self.QUEUE.append(".DS_Store")
+            return True
+
+        return False
 
 class Exploit:
-    def __init__(self, repository: Web):
-        self.__worker__: Web = repository
-        self.__config: dict = None
-        self.__workingDir: str = None
-        self.__downloaded: list[str] = []
-        pass
+    def __init__(self, crawler: Web):
+        self.__crawler = crawler
+        self.__workingDir = ""
+        self.__downloaded = set()
+        self.__config = {}
+        self.__lock = Lock()
+        self.__max_workers = 10
+        self.__pbar = None
 
-    def __dl(self, path: str) -> bytes:
-        message.info(f"Downloading [.git/{path}]...")
-        f = webFiles.get(f"{self.__worker__._getDomain()}/.git/{path}")
-        if not f:
-            exit(message.error("Empty or nonexistent file"))
-        return f
+    def set_workers(self, workers: int):
+        self.__max_workers = int(workers)
 
-    def __defineWorkingDir(self, repository: dict):
-        self.__workingDir = (
-            path.join(
-                getcwd(), "repos", "git", repository["user"], repository["name"], ".git"
-            )
-            if self.__config["host"] is not None
-            else path.join(getcwd(), "repos", "dir", repository["user"], ".git")
-        )
-        makedirs(self.__workingDir, exist_ok=True)
+    def __get_remote_url(self, objname: str, tech_override: str = None) -> str:
+        base = self.__crawler._getDomain()
+        tech = tech_override if tech_override else self.__crawler.REPO_TYPE
+        
+        if tech == "git" and not objname.startswith("."):
+            return f"{base}.git/{objname}"
+        return f"{base}{objname}"
 
-    def __makeDirs(self, dir: str):
-        makedirs(path.dirname(dir), exist_ok=True)
+    def __defineWorkingDir(self, output_dir: str = None):
+        base_path = output_dir if output_dir else getcwd()
+        repo_name = self.__crawler.repository.host
+        repo_type = self.__crawler.REPO_TYPE
+        
+        folder_name = repo_name if repo_type == "git" else f"{repo_name}_{repo_type}"
+        suffix = ".git" if repo_type == "git" else ""
+        
+        # WE NO LONGER makedirs here. Lazy creation in download_and_process.
+        self.__workingDir = path.join(base_path, "repos", folder_name, suffix)
 
     @property
-    def config(self) -> Repository:
-        data = self.__dl("config")
-        if not data:
-            return None
+    def workingDir(self) -> str:
+        return self.__workingDir
 
-        config = configparser.ConfigParser()
-        config.read_string(data.decode("utf-8"))
-        remote_key = next((key for key in config if key.startswith("remote")), None)
-
-        self.__config = (
-            git_url(config[remote_key]["url"])
-            if remote_key
-            else url_git(self.__worker__._getDomain())
-        )
-        message.warn(f"Config: {self.__config}")
-        repo = self.__worker__.repository
-        repo.name, repo.url, repo.host, repo.user = self.__config.values()
-
+    @property
+    def config(self) -> dict:
+        self.load_config()
         return self.__config
 
-    @property
-    def index(self) -> GitIndexFile:
-        return (
-            GitIndexParser.parse(BytesIO(file))
-            if (file := self.__dl("index"))
-            else None
-        )
-
-    @property
-    def HEAD(self) -> str:
-        return data.decode("utf-8") if (data := self.__dl("HEAD")) else None
-
-    def start_download(self):
-        self.__defineWorkingDir(self.__config)
-        while self.__worker__.QUEUE:
-            self.download_item(objname=self.__worker__.QUEUE[0])
-            self.__worker__.QUEUE.pop(0)
-
-    def download_item(self, objname):
-        target = path.join(self.__workingDir, objname)
-
-        if objname in self.__downloaded:
-            return b""
-
-        remote_size = webFiles.filesize(
-            f"{self.__worker__._getDomain()}/.git/{objname}"
-        )
-        if remote_size is None:
-            message.error(f"Failed to fetch size for ({objname}), skipping")
+    def load_config(self):
+        if self.__crawler.REPO_TYPE != "git":
             return
+            
+        if self.__config:
+            return self.__config
 
-        message.info(f"Downloading: ({objname}) [{remote_size} bytes]")
-        self.__makeDirs(target)
-        (
-            self.__downloaded.append(objname)
-            if (
-                isDownloaded := webFiles.download(
-                    f"{self.__worker__._getDomain()}/.git/{objname}", filename=target
-                )
+        data = webFiles.get(self.__get_remote_url("config"))
+        if data:
+            try:
+                config = configparser.ConfigParser()
+                config.read_string(data.decode("utf-8", errors="ignore"))
+                remote_key = next((key for key in config if key.startswith("remote")), None)
+                if remote_key and "url" in config[remote_key]:
+                    self.__config = git_url(config[remote_key]["url"])
+            except: pass
+            
+        if not self.__config:
+            self.__config = url_git(self.__crawler._getDomain())
+            
+        self.__crawler.repository.name = self.__config.get("name", self.__crawler.repository.host)
+        self.__crawler.repository.user = self.__config.get("user", "unknown")
+        return self.__config
+
+    def start_download(self, output_dir: str = None, position: int = 0, force_dir: str = None):
+        if force_dir:
+            self.__workingDir = force_dir
+        else:
+            self.__defineWorkingDir(output_dir)
+            
+        if self.__crawler.REPO_TYPE == "git":
+            self.load_config()
+        
+        # If folder exists, pre-populate downloaded set to avoid re-downloading
+        if os.path.exists(self.__workingDir):
+            message.info(f"Pre-scanning local objects in {self.__workingDir}...")
+            count = 0
+            for r, d, f in os.walk(self.__workingDir):
+                for file in f:
+                    full_p = os.path.join(r, file)
+                    rel_p = os.path.relpath(full_p, self.__workingDir)
+                    # For git, objects are in objects/XX/XXXXX...
+                    # For others, they are top-level or subfolders
+                    self.__downloaded.add(rel_p)
+                    count += 1
+                    
+                    # If it's git, we might want to parse local objects to find new leads
+                    if self.__crawler.REPO_TYPE == "git":
+                        found = Git.parseObjectsAndPacks(full_p)
+                        for o in found:
+                            if o not in self.__downloaded:
+                                self.__crawler.QUEUE.append(o)
+            if count > 0:
+                message.info(f"Loaded {count} existing files from disk. Resuming...")
+
+        self.__stats = {"ok": 0, "err": 0}
+        with self.__lock:
+            initial_count = len(self.__crawler.QUEUE)
+            self.__pbar = tqdm(
+                total=initial_count, 
+                desc=f"Mining {self.__crawler.REPO_TYPE} @ {self.__crawler.repository.host}", 
+                unit="obj",
+                position=position,
+                leave=position == 0,
+                bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}"
             )
-            else None
-        )
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.__max_workers) as executor:
+            while True:
+                with self.__lock:
+                    if not self.__crawler.QUEUE: break
+                    items = list(self.__crawler.QUEUE)
+                    self.__crawler.QUEUE.clear()
+                
+                futures = [executor.submit(self.download_and_process, item) for item in items]
+                concurrent.futures.wait(futures)
+        
+        if self.__pbar: self.__pbar.close()
+        
+        # Final success only if we actually downloaded something
+        if len(self.__downloaded) > 0:
+            message.success(f"Finished {self.__crawler.REPO_TYPE} extraction for {self.__crawler.repository.host}. Success: {self.__stats['ok']}, Failed: {self.__stats['err']}")
+        else:
+            message.warn(f"No valid {self.__crawler.REPO_TYPE} content recovered for {self.__crawler.repository.host}")
 
-        if Git.isObject(objname):
-            (
-                self.__worker__.QUEUE.extend(data)
-                if (data := Git.process(self.__workingDir, objname))
-                else None
-            )
+    def download_and_process(self, objname: str):
+        with self.__lock:
+            if objname in self.__downloaded: return
+        
+        # Download to memory first
+        remote_url = self.__get_remote_url(objname)
+        data = webFiles.get(remote_url)
+        
+        if data and len(data) > 0:
+            is_valid = Internet.is_valid_git_content(data, objname)
+            
+            # --- SCRAPER MODE ---
+            if is_valid == "DIRECTORY_LISTING":
+                found_links = Internet.scrape_index(data)
+                message.info(f"Directory listing found at {objname}. Scraping {len(found_links)} links...")
+                with self.__lock:
+                    added = 0
+                    for l in found_links:
+                        # Construct subpath (e.g., objects/ + 00/ = objects/00/)
+                        subpath = path.join(objname, l)
+                        if subpath not in self.__downloaded:
+                            self.__crawler.QUEUE.append(subpath)
+                            added += 1
+                    if self.__pbar and added > 0:
+                        self.__pbar.total += added
+                return # Don't save HTML files as Git objects
+                
+            if is_valid is True:
+                target = path.join(self.__workingDir, objname)
+                makedirs(path.dirname(target), exist_ok=True)
+                
+                with open(target, "wb") as f:
+                    f.write(data)
+                
+                with self.__lock:
+                    self.__downloaded.add(objname)
+                    self.__stats["ok"] += 1
+                
+                if self.__crawler.REPO_TYPE == "git":
+                    found = []
+                    # Recursive parsing of Git objects/index
+                    if Git.isObject(objname):
+                        found.extend(Git.process(self.__workingDir, objname))
+                    found.extend(Git.parseObjectsAndPacks(target))
+                    
+                    if found:
+                        with self.__lock:
+                            added = 0
+                            for o in found:
+                                if o not in self.__downloaded:
+                                    self.__crawler.QUEUE.append(o)
+                                    added += 1
+                            if self.__pbar and added > 0:
+                                self.__pbar.total += added
+            else:
+                with self.__lock:
+                    self.__stats["err"] += 1
 
-        (
-            self.__worker__.QUEUE.extend(data)
-            if (data := Git.parseObjectsAndPacks(target))
-            else None
-        )
+        if self.__pbar:
+            with self.__lock: 
+                self.__pbar.set_postfix(OK=self.__stats["ok"], Err=self.__stats["err"])
+                self.__pbar.update(1)
