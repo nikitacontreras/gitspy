@@ -1,12 +1,5 @@
 <div align="center">
-<svg width="500" height="120" xmlns="http://www.w3.org/2000/svg">
-  <style>
-    .ascii { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace; font-size: 14px; fill: #58a6ff; }
-  </style>
-  <text x="50%" y="40" text-anchor="middle" class="ascii"> ____  __ _____   __ _____ _  _ </text>
-  <text x="50%" y="60" text-anchor="middle" class="ascii">(( ___ ||  ||    ((  ||_// \\// </text>
-  <text x="50%" y="80" text-anchor="middle" class="ascii"> \\_|| ||  ||   \_)) ||     // </text>
-</svg>
+  <img src="assets/logo.svg" width="600" alt="GitSpy Logo" />
 </div>
 
 ---
