@@ -164,3 +164,6 @@ cython_debug/
 repos/
 
 .DS_Store
+
+.env
+*.txt
