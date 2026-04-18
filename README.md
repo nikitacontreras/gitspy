@@ -3,8 +3,6 @@
 </p>
 
 ---
-
----
 **The Ultimate Multi-Protocol Reconnaissance & Extraction Engine**
 
 GitSpy is a high-performance security tool designed to detect and extract sensitive data from exposed repository folders and configuration files. It supports Git, SVN, Mercurial, and various configuration exposures with a focus on speed, binary integrity, and recursive discovery.
