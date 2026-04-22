@@ -60,7 +60,7 @@ def main():
 
     parser.add_argument("--repair", help="Enable repair mode: resume downloads if local folder exists", action="store_true")
     parser.add_argument("--output", help="Output directory where the repository will be saved", default=None)
-    parser.add_argument("--mode", help="Scanning mode: passive, search, all", default="all", choices=["passive", "search", "all"])
+    parser.add_argument("--mode", help="Scanning mode: passive, extensive, search, all", default="all", choices=["passive", "extensive", "search", "all"])
     parser.add_argument("--speed", help="Processing speed: patient (one by one) or impatient (parallel)", default="patient", choices=["patient", "impatient"])
     parser.add_argument("--timeout", help="Request timeout in seconds", type=int, default=15)
     parser.add_argument("--concurrency", "--parallel", help="Number of repositories to process in parallel (impatient mode)", type=int, default=5)

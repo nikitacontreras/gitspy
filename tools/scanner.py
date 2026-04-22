@@ -1,4 +1,6 @@
 import re
+import ssl
+import socket
 from tools.logger import message
 from tools.strings import domain as get_domain
 
@@ -31,6 +33,45 @@ class Scanner:
         except Exception as e:
             message.error(f"Error in passive scan: {str(e)}")
         
+        return list(subdomains)
+
+    @staticmethod
+    def extensive(target_domain: str) -> list[str]:
+        """Discovery via direct SSL Certificate SAN extraction (100% Local)"""
+        from tools.logger import message
+        import ssl
+        import socket
+        import re
+        
+        message.info(f"Extensive scanning for: {target_domain} (Extracting SAN from SSL cert...)")
+        subdomains = set()
+        try:
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            
+            with socket.create_connection((target_domain, 443), timeout=10) as sock:
+                with context.wrap_socket(sock, server_hostname=target_domain) as sslsock:
+                    cert_bin = sslsock.getpeercert(binary_form=True)
+                    try:
+                        from cryptography import x509
+                        cert_obj = x509.load_der_x509_certificate(cert_bin)
+                        ext = cert_obj.extensions.get_extension_for_class(x509.SubjectAlternativeName)
+                        for name in ext.value.get_values_for_type(x509.DNSName):
+                            n = name.lower()
+                            if "*" not in n and n.endswith(target_domain):
+                                subdomains.add(n)
+                    except (ImportError, Exception):
+                        # Fallback: regex on binary blob
+                        decoded = cert_bin.decode('latin-1', errors='ignore')
+                        matches = re.findall(r'[a-z0-9\-\.]+\.' + target_domain.replace('.', r'\.'), decoded)
+                        for m in matches:
+                            subdomains.add(m.lower())
+
+            message.success(f"Found {len(subdomains)} subdomains via local SSL SAN")
+        except Exception as e:
+            message.error(f"Error in extensive scan: {str(e)}")
+            
         return list(subdomains)
 
     @staticmethod
@@ -120,6 +161,10 @@ class Scanner:
             subs = self.passive(target)
             all_targets.update(subs)
             
+        if self.mode in ["extensive", "all"]:
+            subs = self.extensive(target)
+            all_targets.update(subs)
+
         if self.mode in ["search", "all"]:
             # If search logic is added later, it populates here
             # For now, ensure the main target is included

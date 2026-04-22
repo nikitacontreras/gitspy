@@ -76,6 +76,15 @@ class Git:
                             sha1_hex = sha1.hex()
                             found.append(f"objects/{sha1_hex[:2]}/{sha1_hex[2:]}")
                             pos = null_pos + 21
+                    elif header.startswith(b"commit"):
+                        # Extract tree SHA and parent SHAs from commit body
+                        decoded = body.decode('utf-8', errors='ignore')
+                        lines = decoded.split('\n')
+                        for line in lines:
+                            if line.startswith('tree ') or line.startswith('parent '):
+                                sha1_hex = line.split(' ')[1].strip()
+                                if len(sha1_hex) == 40:
+                                    found.append(f"objects/{sha1_hex[:2]}/{sha1_hex[2:]}")
         except Exception:
             pass
         return found
@@ -196,6 +205,7 @@ class Exploit:
         self.__crawler = crawler
         self.__workingDir = ""
         self.__downloaded = set()
+        self.__parsed = set()
         self.__config = {}
         self.__lock = Lock()
         self.__max_workers = 10
@@ -265,7 +275,6 @@ class Exploit:
         if self.__crawler.REPO_TYPE == "git":
             self.load_config()
         
-        # If folder exists, pre-populate downloaded set to avoid re-downloading
         if os.path.exists(self.__workingDir):
             message.info(f"Pre-scanning local objects in {self.__workingDir}...")
             count = 0
@@ -273,19 +282,20 @@ class Exploit:
                 for file in f:
                     full_p = os.path.join(r, file)
                     rel_p = os.path.relpath(full_p, self.__workingDir)
-                    # For git, objects are in objects/XX/XXXXX...
-                    # For others, they are top-level or subfolders
-                    self.__downloaded.add(rel_p)
+                    
+                    # Store what's already on disk
+                    with self.__lock:
+                        self.__downloaded.add(rel_p)
                     count += 1
                     
-                    # If it's git, we might want to parse local objects to find new leads
+                    # If it's a git object or index, add to queue for recursive mining
                     if self.__crawler.REPO_TYPE == "git":
-                        found = Git.parseObjectsAndPacks(full_p)
-                        for o in found:
-                            if o not in self.__downloaded:
-                                self.__crawler.QUEUE.append(o)
+                        if rel_p == "index" or rel_p.startswith("objects/"):
+                             with self.__lock:
+                                if rel_p not in self.__parsed:
+                                    self.__crawler.QUEUE.append(rel_p)
             if count > 0:
-                message.info(f"Loaded {count} existing files from disk. Resuming...")
+                message.info(f"Detected {count} local files. Enabling recursive Local Mining...")
 
         self.__stats = {"ok": 0, "err": 0}
         with self.__lock:
@@ -319,61 +329,71 @@ class Exploit:
 
     def download_and_process(self, objname: str):
         with self.__lock:
-            if objname in self.__downloaded: return
+            if objname in self.__parsed: return
         
-        # Download to memory first
-        remote_url = self.__get_remote_url(objname)
-        data = webFiles.get(remote_url)
+        target = path.join(self.__workingDir, objname)
+        data = None
         
-        if data and len(data) > 0:
-            is_valid = Internet.is_valid_git_content(data, objname)
+        # Check if we already have it locally
+        if os.path.exists(target):
+            try:
+                with open(target, "rb") as f:
+                    data = f.read()
+            except: pass
             
-            # --- SCRAPER MODE ---
-            if is_valid == "DIRECTORY_LISTING":
-                found_links = Internet.scrape_index(data)
-                message.info(f"Directory listing found at {objname}. Scraping {len(found_links)} links...")
-                with self.__lock:
-                    added = 0
-                    for l in found_links:
-                        # Construct subpath (e.g., objects/ + 00/ = objects/00/)
-                        subpath = path.join(objname, l)
-                        if subpath not in self.__downloaded:
-                            self.__crawler.QUEUE.append(subpath)
-                            added += 1
-                    if self.__pbar and added > 0:
-                        self.__pbar.total += added
-                return # Don't save HTML files as Git objects
-                
-            if is_valid is True:
-                target = path.join(self.__workingDir, objname)
+        # If not local, download from remote
+        if data is None:
+            remote_url = self.__get_remote_url(objname)
+            data = webFiles.get(remote_url)
+            if data and Internet.is_valid_git_content(data, objname) is True:
                 makedirs(path.dirname(target), exist_ok=True)
-                
                 with open(target, "wb") as f:
                     f.write(data)
-                
                 with self.__lock:
                     self.__downloaded.add(objname)
                     self.__stats["ok"] += 1
-                
-                if self.__crawler.REPO_TYPE == "git":
-                    found = []
-                    # Recursive parsing of Git objects/index
-                    if Git.isObject(objname):
-                        found.extend(Git.process(self.__workingDir, objname))
-                    found.extend(Git.parseObjectsAndPacks(target))
-                    
-                    if found:
-                        with self.__lock:
-                            added = 0
-                            for o in found:
-                                if o not in self.__downloaded:
-                                    self.__crawler.QUEUE.append(o)
-                                    added += 1
-                            if self.__pbar and added > 0:
-                                self.__pbar.total += added
             else:
+                if data and Internet.is_valid_git_content(data, objname) == "DIRECTORY_LISTING":
+                    found_links = Internet.scrape_index(data)
+                    with self.__lock:
+                        added = 0
+                        for l in found_links:
+                            subpath = path.join(objname, l)
+                            if subpath not in self.__downloaded:
+                                self.__crawler.QUEUE.append(subpath)
+                                added += 1
+                        if self.__pbar and added > 0:
+                            self.__pbar.total += added
+                else:
+                    with self.__lock:
+                        self.__stats["err"] += 1
+                return
+
+        # At this point, we have data (either local or just downloaded)
+        # Now we MINE it recursively
+        with self.__lock:
+            self.__parsed.add(objname)
+            
+        if self.__crawler.REPO_TYPE == "git":
+            found = []
+            if Git.isObject(objname):
+                found.extend(Git.process(self.__workingDir, objname))
+            found.extend(Git.parseObjectsAndPacks(target))
+            
+            if found:
                 with self.__lock:
-                    self.__stats["err"] += 1
+                    added = 0
+                    for o in found:
+                        if o not in self.__parsed: # Check parsed, not downloaded
+                            self.__crawler.QUEUE.append(o)
+                            added += 1
+                    if self.__pbar and added > 0:
+                        self.__pbar.total += added
+
+        if self.__pbar:
+            with self.__lock: 
+                self.__pbar.set_postfix(OK=self.__stats["ok"], Err=self.__stats["err"])
+                self.__pbar.update(1)
 
         if self.__pbar:
             with self.__lock: 
